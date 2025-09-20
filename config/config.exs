@@ -22,6 +22,13 @@ config :org_notes, OrgNotesWeb.Endpoint,
   pubsub_server: OrgNotes.PubSub,
   live_view: [signing_salt: "JuWE7Wqv"]
 
+# OAuth Configuration
+config :ueberauth, Ueberauth,
+  providers: [
+    google: {Ueberauth.Strategy.Google, []},
+    github: {Ueberauth.Strategy.Github, [default_scope: "user:email"]}
+  ]
+
 # Configures the mailer
 #
 # By default it uses the "Local" adapter which stores the emails
