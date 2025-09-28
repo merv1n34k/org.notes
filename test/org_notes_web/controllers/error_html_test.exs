@@ -1,8 +1,8 @@
 defmodule OrgNotesWeb.ErrorHTMLTest do
   use OrgNotesWeb.ConnCase, async: true
 
-  # Bring render_to_string/4 for testing custom views
-  import Phoenix.Template, only: [render_to_string: 4]
+  # Bring render_to_string/3 for testing custom views
+  import Phoenix.Template
 
   test "renders 404.html" do
     assert render_to_string(OrgNotesWeb.ErrorHTML, "404", "html", []) == "Not Found"

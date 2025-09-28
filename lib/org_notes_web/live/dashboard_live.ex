@@ -1,82 +1,148 @@
 defmodule OrgNotesWeb.DashboardLive do
   use OrgNotesWeb, :live_view
-  alias OrgNotes.{Tasks, Accounts}
-  alias Phoenix.PubSub
+  alias OrgNotes.Tasks
 
   @impl true
-  def mount(_params, session, socket) do
-    user = Accounts.get_user!(session["user_id"])
-    preferences = Accounts.get_user_preferences(user.id)
-
+  def mount(_params, _session, socket) do
+    # current_user is now already in assigns from on_mount hook
     if connected?(socket) do
-      PubSub.subscribe(OrgNotes.PubSub, "user:#{user.id}")
+      # Subscribe to task updates (all tasks are visible to all)
+      Phoenix.PubSub.subscribe(OrgNotes.PubSub, "tasks")
     end
+
+    tasks = Tasks.list_all_tasks()
+    weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
 
     socket =
       socket
-      |> assign(:user, user)
-      |> assign(:preferences, preferences)
-      |> assign(:current_organization, preferences.default_organization || "weekday")
-      |> assign(:current_filters, preferences.default_filters || %{})
-      |> assign(:view_stack, [])
-      |> assign(:show_account_menu, false)
       |> assign(:page_title, "Dashboard")
-      |> load_blocks()
+      |> assign(:weekday_blocks, weekday_blocks)
+      |> assign(:show_task_modal, false)
+      |> assign(:current_block, nil)
+      |> assign(:task_form, to_form(Ecto.Changeset.change(%Tasks.Task{})))
+      |> assign(:checklist_form, to_form(%{"content" => ""}))
+      |> assign(:editing_task_id, nil)
+      |> assign(:editing_checklist_id, nil)
+      |> assign(:show_reference_modal, false)
+      |> assign(:available_tasks, [])
+      |> assign(:organize_by, "weekday")  # Add this
+      |> assign(:filters, %{})            # Add this
+      |> stream(:tasks, tasks)
 
     {:ok, socket}
   end
 
   @impl true
-  def handle_event("click_block", %{"block_id" => block_id, "block_type" => block_type}, socket) do
-    new_filters = case block_type do
-      "weekday" -> Map.put(socket.assigns.current_filters, :day, block_id)
-      "task" -> Map.put(socket.assigns.current_filters, :ids, [block_id])
-      "tag" -> Map.put(socket.assigns.current_filters, :tags, [block_id])
-      _ -> socket.assigns.current_filters
+  def handle_event("open_task_modal", %{"block_id" => block_id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_task_modal, true)
+     |> assign(:current_block, block_id)
+     |> assign(:task_form, to_form(Ecto.Changeset.change(%Tasks.Task{})))}
+  end
+
+  @impl true
+  def handle_event("close_task_modal", _, socket) do
+    {:noreply, assign(socket, :show_task_modal, false)}
+  end
+
+  @impl true
+  def handle_event("save_task", %{"task" => task_params}, socket) do
+    # Parse tags from comma-separated string to array
+    task_params = parse_tags(task_params)
+
+    case Tasks.create_task(task_params, socket.assigns.current_user.id, socket.assigns.current_block) do
+      {:ok, _task} ->
+        tasks = Tasks.list_all_tasks()
+        weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
+
+        {:noreply,
+         socket
+         |> assign(:weekday_blocks, weekday_blocks)
+         |> assign(:show_task_modal, false)
+         |> stream(:tasks, tasks, reset: true)
+         |> put_flash(:info, "Task created successfully")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :task_form, to_form(changeset))}
     end
-
-    view_state = %{
-      organization: socket.assigns.current_organization,
-      filters: socket.assigns.current_filters
-    }
-
-    socket =
-      socket
-      |> update(:view_stack, &(&1 ++ [view_state]))
-      |> assign(:current_organization, "task")
-      |> assign(:current_filters, new_filters)
-      |> load_blocks()
-
-    {:noreply, socket}
   end
 
   @impl true
-  def handle_event("change_organization", %{"organization" => organization}, socket) do
-    socket =
-      socket
-      |> assign(:current_organization, organization)
-      |> assign(:view_stack, [])
-      |> load_blocks()
+  def handle_event("validate_task", %{"task" => task_params}, socket) do
+    # Parse tags for validation too
+    task_params = parse_tags(task_params)
 
-    {:noreply, socket}
+    changeset =
+      %Tasks.Task{}
+      |> Tasks.Task.changeset(task_params)
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, :task_form, to_form(changeset))}
   end
 
   @impl true
-  def handle_event("update_filter", params, socket) do
-    filters = update_filters(socket.assigns.current_filters, params)
+  def handle_event("delete_task", %{"task_id" => task_id}, socket) do
+    task = Tasks.get_task!(task_id)
 
-    socket =
-      socket
-      |> assign(:current_filters, filters)
-      |> load_blocks()
+    case Tasks.delete_task(task, socket.assigns.current_user.id) do
+      {:ok, _task} ->
+        tasks = Tasks.list_all_tasks()
+        weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
 
-    {:noreply, socket}
+        {:noreply,
+         socket
+         |> assign(:weekday_blocks, weekday_blocks)
+         |> stream(:tasks, tasks, reset: true)
+         |> put_flash(:info, "Task deleted successfully")}
+
+      {:error, :unauthorized} ->
+        {:noreply, put_flash(socket, :error, "You can only delete your own tasks")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Could not delete task")}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_lock", %{"task_id" => task_id}, socket) do
+    task = Tasks.get_task!(task_id)
+
+    if task.owner_id == socket.assigns.current_user.id do
+      case Tasks.toggle_task_lock(task, socket.assigns.current_user.id) do
+        {:ok, _task} ->
+          tasks = Tasks.list_all_tasks()
+          weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
+
+          {:noreply,
+           socket
+           |> assign(:weekday_blocks, weekday_blocks)
+           |> stream(:tasks, tasks, reset: true)}
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Could not update task lock")}
+      end
+    else
+      {:noreply, put_flash(socket, :error, "Only the task owner can change lock status")}
+    end
   end
 
   @impl true
   def handle_event("toggle_checklist", %{"item_id" => item_id}, socket) do
-    case Tasks.toggle_checklist_item(item_id, socket.assigns.user.id) do
-      {:ok, _item} ->
+    case Tasks.toggle_checklist_item(item_id, socket.assigns.current_user.id) do
+      {:ok, item} ->
+        # Check if we should auto-complete the task
+        task = Tasks.get_task!(item.task_id)
+        Tasks.maybe_auto_complete_task(task, socket.assigns.current_user.id)
+
+        tasks = Tasks.list_all_tasks()
+        weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
+
+        socket =
+          socket
+          |> assign(:weekday_blocks, weekday_blocks)
+          |> stream(:tasks, tasks, reset: true)
+
         {:noreply, socket}
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Could not update item")}
@@ -84,292 +150,226 @@ defmodule OrgNotesWeb.DashboardLive do
   end
 
   @impl true
-  def handle_event("add_task", %{"block_id" => block_id}, socket) do
-    # TODO: Implement task creation modal
-    {:noreply, put_flash(socket, :info, "Add task for block: #{block_id}")}
+  def handle_event("add_checklist_item", %{"task_id" => task_id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:editing_task_id, task_id)
+     |> assign(:editing_checklist_id, nil)
+     |> assign(:checklist_form, to_form(%{"content" => ""}))}
   end
 
   @impl true
-  def handle_event("toggle_account_menu", _, socket) do
-    {:noreply, assign(socket, :show_account_menu, !socket.assigns.show_account_menu)}
+  def handle_event("edit_checklist_item", %{"item_id" => item_id}, socket) do
+    item = Tasks.get_checklist_item!(item_id)
+
+    {:noreply,
+     socket
+     |> assign(:editing_task_id, item.task_id)
+     |> assign(:editing_checklist_id, item.id)
+     |> assign(:checklist_form, to_form(%{"content" => item.content}))}
   end
 
   @impl true
-  def handle_info({:task_updated, _payload}, socket) do
-    socket = load_blocks(socket)
+  def handle_event("save_checklist_item", %{"checklist" => %{"content" => content}}, socket) do
+    if socket.assigns.editing_checklist_id do
+      # Update existing item
+      case Tasks.update_checklist_item(socket.assigns.editing_checklist_id, %{"content" => content}, socket.assigns.current_user.id) do
+        {:ok, _item} ->
+          tasks = Tasks.list_all_tasks()
+          weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
+
+          {:noreply,
+           socket
+           |> assign(:weekday_blocks, weekday_blocks)
+           |> assign(:editing_task_id, nil)
+           |> assign(:editing_checklist_id, nil)
+           |> stream(:tasks, tasks, reset: true)}
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Could not update checklist item")}
+      end
+    else
+      # Create new item
+      case Tasks.create_checklist_item(socket.assigns.editing_task_id, %{"content" => content}, socket.assigns.current_user.id) do
+        {:ok, _item} ->
+          tasks = Tasks.list_all_tasks()
+          weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
+
+          {:noreply,
+           socket
+           |> assign(:weekday_blocks, weekday_blocks)
+           |> assign(:editing_task_id, nil)
+           |> assign(:editing_checklist_id, nil)
+           |> stream(:tasks, tasks, reset: true)}
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Could not add checklist item")}
+      end
+    end
+  end
+
+  @impl true
+  def handle_event("delete_checklist_item", _, socket) do
+    if socket.assigns.editing_checklist_id do
+      case Tasks.delete_checklist_item(socket.assigns.editing_checklist_id, socket.assigns.current_user.id) do
+        {:ok, _item} ->
+          tasks = Tasks.list_all_tasks()
+          weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
+
+          {:noreply,
+           socket
+           |> assign(:weekday_blocks, weekday_blocks)
+           |> assign(:editing_task_id, nil)
+           |> assign(:editing_checklist_id, nil)
+           |> stream(:tasks, tasks, reset: true)}
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Could not delete checklist item")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_checklist", _, socket) do
+    {:noreply,
+     socket
+     |> assign(:editing_task_id, nil)
+     |> assign(:editing_checklist_id, nil)}
+  end
+
+  @impl true
+  def handle_event("open_reference_modal", %{"task_id" => task_id}, socket) do
+    available_tasks = Tasks.list_available_tasks(task_id)
+
+    {:noreply,
+     socket
+     |> assign(:show_reference_modal, true)
+     |> assign(:editing_task_id, task_id)
+     |> assign(:available_tasks, available_tasks)}
+  end
+
+  @impl true
+  def handle_event("close_reference_modal", _, socket) do
+    {:noreply, assign(socket, :show_reference_modal, false)}
+  end
+
+  @impl true
+  def handle_event("add_reference", %{"referenced_task_id" => referenced_task_id}, socket) do
+    case Tasks.create_task_reference(socket.assigns.editing_task_id, referenced_task_id, socket.assigns.current_user.id) do
+      {:ok, _reference} ->
+        tasks = Tasks.list_all_tasks()
+        weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
+
+        {:noreply,
+         socket
+         |> assign(:weekday_blocks, weekday_blocks)
+         |> assign(:show_reference_modal, false)
+         |> stream(:tasks, tasks, reset: true)
+         |> put_flash(:info, "Reference added successfully")}
+
+      {:error, :unauthorized} ->
+        {:noreply, put_flash(socket, :error, "You cannot edit this task")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Could not add reference")}
+    end
+  end
+
+  @impl true
+  def handle_event("organize_by", %{"type" => type}, socket) do
+    # TODO: Implement organization logic
+    {:noreply,
+     socket
+     |> assign(:organize_by, type)
+     |> put_flash(:info, "Organization changed to #{type}")}
+  end
+
+  @impl true
+  def handle_event("update_filter", %{"field" => field, "value" => value}, socket) do
+    # TODO: Implement filtering logic
+    filters = Map.put(socket.assigns.filters, String.to_atom(field), value)
+    {:noreply,
+     socket
+     |> assign(:filters, filters)
+     |> put_flash(:info, "Filter updated")}
+  end
+
+  @impl true
+  def handle_event("clear_filters", _, socket) do
+    # TODO: Implement clear filters logic
+    {:noreply,
+     socket
+     |> assign(:filters, %{})
+     |> put_flash(:info, "Filters cleared")}
+  end
+
+  @impl true
+  def handle_event("show_date_picker", _, socket) do
+    # TODO: Implement date picker modal
+    {:noreply, put_flash(socket, :info, "Date picker coming soon")}
+  end
+
+  @impl true
+  def handle_info(%Phoenix.Socket.Broadcast{event: "task_updated", payload: _payload}, socket) do
+    tasks = Tasks.list_all_tasks()
+    weekday_blocks = Tasks.group_tasks_by_weekday(tasks)
+
+    socket =
+      socket
+      |> assign(:weekday_blocks, weekday_blocks)
+      |> stream(:tasks, tasks, reset: true)
+
     {:noreply, socket}
   end
 
-  defp load_blocks(socket) do
-    blocks = Tasks.list_tasks_organized(
-      socket.assigns.user.id,
-      socket.assigns.current_organization,
-      socket.assigns.current_filters
-    )
-
-    assign(socket, :blocks, blocks)
-  end
-
-  defp update_filters(filters, %{"type" => "search", "value" => value}) do
-    if value == "" do
-      Map.delete(filters, :search)
-    else
-      Map.put(filters, :search, value)
-    end
-  end
-
-  defp update_filters(filters, %{"type" => "tags", "action" => "add", "value" => tag}) do
-    Map.update(filters, :tags, [tag], &(&1 ++ [tag]))
-  end
-
-  defp update_filters(filters, %{"type" => "tags", "action" => "remove", "value" => tag}) do
-    case Map.get(filters, :tags, []) do
-      [] -> filters
-      tags ->
-        new_tags = Enum.filter(tags, &(&1 != tag))
-        if new_tags == [] do
-          Map.delete(filters, :tags)
-        else
-          Map.put(filters, :tags, new_tags)
-        end
-    end
-  end
-
+  # Catch-all handle_info for any other messages
   @impl true
-  def render(assigns) do
-    ~H"""
-    <div class="min-h-screen bg-gray-50">
-      <.app_header user={@user} show_account_menu={@show_account_menu} />
-      <.view_control
-        current_organization={@current_organization}
-        current_filters={@current_filters}
-        show_back={length(@view_stack) > 0}
-      />
-      <.block_container blocks={@blocks} />
-    </div>
-    """
+  def handle_info(_msg, socket) do
+    {:noreply, socket}
   end
 
-  # Rename the function from 'header' to 'app_header':
-  defp app_header(assigns) do
-    ~H"""
-    <header class="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-10">
-      <div class="px-4 sm:px-6 lg:px-8">
-        <div class="flex items-center justify-between h-16">
-          <h1 class="text-xl font-semibold">Dashboard</h1>
+  # Helper functions
+  def state_badge_class("active"), do: "bg-success/20 text-success font-medium"
+  def state_badge_class("completed"), do: "bg-info/20 text-info"
+  def state_badge_class("archived"), do: "bg-base-300 text-base-content/50"
+  def state_badge_class(_), do: "bg-base-300 text-base-content/60"
 
-          <div class="flex items-center space-x-4">
-            <button class="p-2 text-gray-500 hover:text-gray-700">
-              🌓
-            </button>
-
-            <div class="relative">
-              <button
-                phx-click="toggle_account_menu"
-                class="flex items-center text-sm rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-              >
-                <span class="p-2">👤 <%= @user.name %></span>
-              </button>
-
-              <%= if @show_account_menu do %>
-                <.account_dropdown user={@user} />
-              <% end %>
-            </div>
-          </div>
-        </div>
-      </div>
-    </header>
-    """
+  def format_time(datetime) do
+    # Use %I for 12-hour format instead of %l
+    Calendar.strftime(datetime, "%b %d, %I:%M %p") |> String.trim()
   end
 
-
-  defp account_dropdown(assigns) do
-    ~H"""
-    <div class="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5">
-      <div class="py-1">
-        <div class="px-4 py-2 text-sm text-gray-700 border-b">
-          <div class="font-semibold"><%= @user.name %></div>
-          <div class="text-xs text-gray-500"><%= @user.email %></div>
-          <%= if @user.role != "user" do %>
-            <div class="text-xs text-indigo-600"><%= String.capitalize(@user.role) %></div>
-          <% end %>
-        </div>
-
-        <%= if @user.role == "super_admin" do %>
-          <.link href="/admin/server"
-                 class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-            Manage Server
-          </.link>
-        <% end %>
-
-        <.link href="/logout" method="delete"
-               class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-          Logout
-        </.link>
-      </div>
-    </div>
-    """
+  def can_edit?(task, user) do
+    task.owner_id == user.id || task.unlocked
   end
 
-  defp view_control(assigns) do
-    ~H"""
-    <div class="sticky top-16 bg-white border-b border-gray-200 px-4 sm:px-6 lg:px-8 py-3 z-10">
-      <div class="flex items-center space-x-4">
-        <div class="flex items-center space-x-2">
-          <label class="text-sm font-medium text-gray-700">Organize by:</label>
-          <select
-            phx-change="change_organization"
-            name="organization"
-            class="text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
-          >
-            <option value="weekday" selected={@current_organization == "weekday"}>Weekday</option>
-            <option value="task" selected={@current_organization == "task"}>Task</option>
-            <option value="day" selected={@current_organization == "day"}>Day</option>
-            <option value="week" selected={@current_organization == "week"}>Week</option>
-            <option value="month" selected={@current_organization == "month"}>Month</option>
-            <option value="year" selected={@current_organization == "year"}>Year</option>
-            <option value="tags" selected={@current_organization == "tags"}>Tags</option>
-          </select>
-        </div>
-
-        <div class="flex-1 flex items-center space-x-2">
-          <span class="text-sm font-medium text-gray-700">Filter:</span>
-
-          <input
-            type="text"
-            phx-change="update_filter"
-            phx-debounce="300"
-            name="search"
-            value={@current_filters[:search] || ""}
-            placeholder="Search tasks..."
-            class="flex-1 text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
-          />
-
-          <button class="p-2 text-gray-500 hover:text-gray-700">📅</button>
-          <button class="p-2 text-gray-500 hover:text-gray-700">#</button>
-
-          <%= for tag <- Map.get(@current_filters, :tags, []) do %>
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800">
-              #<%= tag %>
-              <button
-                phx-click="update_filter"
-                phx-value-type="tags"
-                phx-value-action="remove"
-                phx-value-value={tag}
-                class="ml-1 text-indigo-600 hover:text-indigo-800"
-              >
-                ×
-              </button>
-            </span>
-          <% end %>
-        </div>
-      </div>
-    </div>
-    """
+  def task_completion_state(task) do
+    case task.checklist_items do
+      [] -> "active"
+      items ->
+        all_completed = Enum.all?(items, fn item -> item.state == "completed" end)
+        if all_completed, do: "completed", else: "active"
+    end
   end
 
-  defp block_container(assigns) do
-    ~H"""
-    <div class="px-4 sm:px-6 lg:px-8 py-6">
-      <div class="flex space-x-4 overflow-x-auto">
-        <%= for block <- @blocks do %>
-          <.task_block block={block} />
-        <% end %>
-      </div>
-    </div>
-    """
-  end
+  # Parse tags from comma-separated string to array
+  defp parse_tags(params) do
+    case Map.get(params, "tags") do
+      nil ->
+        params
+      "" ->
+        Map.put(params, "tags", [])
+      tags_string when is_binary(tags_string) ->
+        tags = tags_string
+        |> String.split(",")
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
 
-  defp task_block(assigns) do
-    ~H"""
-    <div class="flex-shrink-0 w-72 bg-white rounded-lg shadow">
-      <div
-        phx-click="click_block"
-        phx-value-block-id={@block.id}
-        phx-value-block-type={@block.type}
-        class="px-4 py-3 border-b border-gray-200 cursor-pointer hover:bg-gray-50"
-      >
-        <h3 class="text-lg font-medium text-gray-900">
-          <%= @block.name %>
-        </h3>
-        <p class="text-sm text-gray-500">
-          <%= length(@block.tasks) %> <%= if length(@block.tasks) == 1, do: "task", else: "tasks" %>
-        </p>
-      </div>
-
-      <div class="max-h-96 overflow-y-auto">
-        <%= for task <- @block.tasks do %>
-          <.task_item task={task} />
-        <% end %>
-
-        <%= if length(@block.tasks) == 0 do %>
-          <div class="px-4 py-8 text-center text-gray-500">
-            No tasks for <%= @block.name %>
-          </div>
-        <% end %>
-      </div>
-
-      <div class="px-4 py-3 border-t border-gray-200">
-        <button
-          phx-click="add_task"
-          phx-value-block-id={@block.id}
-          class="text-sm text-indigo-600 hover:text-indigo-800"
-        >
-          + Add Task
-        </button>
-      </div>
-    </div>
-    """
-  end
-
-  defp task_item(assigns) do
-    ~H"""
-    <div class="px-4 py-3 border-b border-gray-100">
-      <h4 class="font-medium text-gray-900"><%= @task.name %></h4>
-
-      <div class="flex flex-wrap gap-1 mt-1">
-        <%= for tag <- @task.tags do %>
-          <span class="text-xs px-2 py-0.5 bg-gray-100 text-gray-700 rounded">
-            #<%= tag %>
-          </span>
-        <% end %>
-      </div>
-
-      <div class="mt-2 space-y-1">
-        <%= for item <- Enum.filter(@task.checklist_items, &is_nil(&1.referenced_task_id)) do %>
-          <.checklist_item item={item} />
-        <% end %>
-      </div>
-
-      <%= if Enum.any?(@task.checklist_items, &(&1.referenced_task_id)) do %>
-        <div class="mt-2 pt-2 border-t border-gray-100">
-          <p class="text-xs font-medium text-gray-700 mb-1">References:</p>
-          <%= for item <- Enum.filter(@task.checklist_items, &(&1.referenced_task_id)) do %>
-            <div class="flex items-center text-sm text-gray-600">
-              <span class="mr-2">→</span>
-              <%= item.content %>
-            </div>
-          <% end %>
-        </div>
-      <% end %>
-    </div>
-    """
-  end
-
-  defp checklist_item(assigns) do
-    ~H"""
-    <label class="flex items-center text-sm">
-      <input
-        type="checkbox"
-        checked={@item.completed}
-        phx-click="toggle_checklist"
-        phx-value-item-id={@item.id}
-        class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-      />
-      <span class={"ml-2 #{if @item.completed, do: "line-through text-gray-500"}"}>
-        <%= @item.content %>
-      </span>
-    </label>
-    """
+        Map.put(params, "tags", tags)
+      tags when is_list(tags) ->
+        params
+    end
   end
 end

@@ -48,7 +48,8 @@ defmodule OrgNotesWeb.AuthController do
 
   defp get_ip_address(conn) do
     case Plug.Conn.get_req_header(conn, "x-forwarded-for") do
-      [ip | _] -> ip
+      [forwarded | _] ->
+        forwarded |> String.split(",") |> List.first() |> String.trim()
       [] ->
         conn.remote_ip
         |> :inet.ntoa()

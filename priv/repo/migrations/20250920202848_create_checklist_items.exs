@@ -6,20 +6,16 @@ defmodule OrgNotes.Repo.Migrations.CreateChecklistItems do
       add :id, :binary_id, primary_key: true
       add :task_id, references(:tasks, type: :binary_id, on_delete: :delete_all), null: false
       add :content, :string, null: false, size: 1000
-      add :referenced_task_id, references(:tasks, type: :binary_id, on_delete: :nilify_all)
-      add :completed, :boolean, default: false
-      add :completed_by_id, references(:users, type: :binary_id)
-      add :completed_at, :utc_datetime
+      add :state, :string, null: false, default: "pending"
       add :position, :integer, null: false, default: 0
+      add :created_by_id, references(:users, type: :binary_id), null: false
+      add :modified_by_id, references(:users, type: :binary_id), null: false
+      add :modified_at, :utc_datetime, null: false
 
-      timestamps(updated_at: false)
+      timestamps()
     end
 
     create index(:checklist_items, [:task_id, :position])
-    create index(:checklist_items, [:referenced_task_id], where: "referenced_task_id IS NOT NULL")
-
-    # Add constraint for position ranges
-    create constraint(:checklist_items, :check_position,
-      check: "(referenced_task_id IS NULL AND position >= 0) OR (referenced_task_id IS NOT NULL AND position >= 1000)")
+    create index(:checklist_items, [:modified_at])
   end
 end

@@ -22,24 +22,30 @@ defmodule OrgNotesWeb.Router do
   scope "/", OrgNotesWeb do
     pipe_through :browser
 
-    live "/", AuthLive, :index
+    live "/", WelcomeLive, :index
     get "/auth/:provider", AuthController, :request
     get "/auth/:provider/callback", AuthController, :callback
-  end
-
-  # Authenticated routes
-  scope "/", OrgNotesWeb do
-    pipe_through [:browser, :authenticated]
-
-    live "/dashboard", DashboardLive, :index
     delete "/logout", AuthController, :logout
   end
 
-  # Super admin routes
-  scope "/admin", OrgNotesWeb do
-    pipe_through [:browser, :authenticated, :super_admin]
+  # Authenticated routes - Using live_session for proper current_scope
+  scope "/", OrgNotesWeb do
+    pipe_through :browser
 
-    live "/server", ServerManagementLive, :index
+    live_session :authenticated,
+      on_mount: [{OrgNotesWeb.Auth.AuthHook, :ensure_authenticated}] do
+      live "/dashboard", DashboardLive, :index
+    end
+  end
+
+  # Super admin routes - Using live_session
+  scope "/admin", OrgNotesWeb do
+    pipe_through :browser
+
+    live_session :super_admin,
+      on_mount: [{OrgNotesWeb.Auth.AuthHook, :ensure_authenticated}] do
+      live "/server", ServerManagementLive, :index
+    end
   end
 
   # Enable LiveDashboard in development

@@ -5,17 +5,24 @@ defmodule OrgNotes.ActivityLog do
 
   @actions ~w(
     user_login user_logout task_created task_updated task_deleted
-    checklist_toggled checklist_item_created role_changed user_deleted task_shared
+    checklist_toggled checklist_item_created role_changed user_deleted
   )a
 
   def log(action, attrs) when action in @actions do
+    ip_address = attrs[:ip_address]
+
+    changes = attrs
+    |> Map.delete(:ip_address)
+    |> Map.delete(:actor_id)
+
     %ActivityLog{}
     |> ActivityLog.changeset(%{
       action: to_string(action),
       user_id: attrs[:user_id] || attrs[:actor_id],
       task_id: attrs[:task_id],
-      changes: attrs,
-      ip_address: attrs[:ip_address]
+      checklist_item_id: attrs[:checklist_item_id],
+      changes: changes,
+      ip_address: ip_address
     })
     |> Repo.insert()
     |> broadcast_activity()
@@ -36,6 +43,7 @@ defmodule OrgNotes.ActivityLog do
       timestamp: entry.inserted_at,
       user_name: entry.user && entry.user.name,
       action: humanize_action(entry.action, entry.changes),
+      ip_address: entry.ip_address,
       raw: entry
     }
   end
@@ -46,18 +54,16 @@ defmodule OrgNotes.ActivityLog do
     do: "updated task"
   defp humanize_action("task_deleted", %{"task_name" => name}),
     do: "deleted task \"#{name}\""
-  defp humanize_action("checklist_toggled", %{"item" => item, "completed" => true}),
-    do: "checked \"#{item}\""
+  defp humanize_action("checklist_toggled", %{"item" => item, "state" => "completed"}),
+    do: "completed \"#{item}\""
   defp humanize_action("checklist_toggled", %{"item" => item}),
-    do: "unchecked \"#{item}\""
+    do: "uncompleted \"#{item}\""
   defp humanize_action("checklist_item_created", %{"item" => item}),
     do: "added checklist item \"#{item}\""
   defp humanize_action("role_changed", %{"new_role" => role}),
     do: "role changed to #{role}"
   defp humanize_action("user_deleted", _),
     do: "deleted user"
-  defp humanize_action("task_shared", _),
-    do: "shared task"
   defp humanize_action("user_login", _),
     do: "logged in"
   defp humanize_action("user_logout", _),

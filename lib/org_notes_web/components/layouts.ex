@@ -1,116 +1,107 @@
 defmodule OrgNotesWeb.Layouts do
   @moduledoc """
-  This module holds layouts and related functionality
-  used by your application.
+  This module holds layouts for OrgNotes application.
   """
   use OrgNotesWeb, :html
 
-  # Embed all files in layouts/* within this module.
-  # The default root.html.heex file contains the HTML
-  # skeleton of your application, namely HTML headers
-  # and other static content.
+  import OrgNotesWeb.NavBar
+  import OrgNotesWeb.ViewControl
+
   embed_templates "layouts/*"
 
   @doc """
-  Renders your app layout.
-
-  This function is typically invoked from every template,
-  and it often contains your application menu, sidebar,
-  or similar.
-
-  ## Examples
-
-      <Layouts.app flash={@flash}>
-        <h1>Content</h1>
-      </Layouts.app>
-
+  App layout component for LiveView pages.
   """
-  attr :flash, :map, required: true, doc: "the map of flash messages"
-
-  attr :current_scope, :map,
-    default: nil,
-    doc: "the current [scope](https://hexdocs.pm/phoenix/scopes.html)"
-
-  slot :inner_block, required: true
-
   def app(assigns) do
+    # Determine if ViewControl should be shown
+    show_viewcontrol = show_viewcontrol?(assigns)
+    assigns = assign(assigns, :show_viewcontrol, show_viewcontrol)
+
     ~H"""
-    <header class="navbar px-4 sm:px-6 lg:px-8">
-      <div class="flex-1">
-        <a href="/" class="flex-1 flex w-fit items-center gap-2">
-          <img src={~p"/images/logo.svg"} width="36" />
-          <span class="text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
-        </a>
-      </div>
-      <div class="flex-none">
-        <ul class="flex flex-column px-1 space-x-4 items-center">
-          <li>
-            <a href="https://phoenixframework.org/" class="btn btn-ghost">Website</a>
-          </li>
-          <li>
-            <a href="https://github.com/phoenixframework/phoenix" class="btn btn-ghost">GitHub</a>
-          </li>
-          <li>
-            <.theme_toggle />
-          </li>
-          <li>
-            <a href="https://hexdocs.pm/phoenix/overview.html" class="btn btn-primary">
-              Get Started <span aria-hidden="true">&rarr;</span>
-            </a>
-          </li>
-        </ul>
-      </div>
-    </header>
+    <div class="min-h-screen flex flex-col bg-base-100">
+      <header>
+        <.navbar user={assigns[:current_user]} />
+        <%= if @show_viewcontrol do %>
+          <.viewcontrol
+            current_user={assigns[:current_user]}
+            organize_by={assigns[:organize_by] || "weekday"}
+            filters={assigns[:filters] || %{}}
+          />
+        <% end %>
+      </header>
 
-    <main class="px-4 py-20 sm:px-6 lg:px-8">
-      <div class="mx-auto max-w-2xl space-y-4">
-        {render_slot(@inner_block)}
-      </div>
-    </main>
+      <main class="flex-1">
+        <%= @inner_content %>
+      </main>
 
-    <.flash_group flash={@flash} />
+      <.flash_group flash={@flash} />
+    </div>
     """
   end
 
+  # Helper function to determine if ViewControl should be shown
+  defp show_viewcontrol?(assigns) do
+    # Show ViewControl only on Dashboard
+    # Check the module directly from socket.view
+    case assigns[:socket] do
+      nil -> false
+      socket ->
+        socket.view == OrgNotesWeb.DashboardLive
+    end
+  end
+
   @doc """
-  Shows the flash group with standard titles and content.
-
-  ## Examples
-
-      <.flash_group flash={@flash} />
+  Renders flash notices.
   """
-  attr :flash, :map, required: true, doc: "the map of flash messages"
-  attr :id, :string, default: "flash-group", doc: "the optional id of flash container"
+  attr :flash, :map, required: true
 
   def flash_group(assigns) do
     ~H"""
-    <div id={@id} aria-live="polite">
+    <div id="flash-group" class="fixed top-20 right-4 z-50 space-y-2">
       <.flash kind={:info} flash={@flash} />
       <.flash kind={:error} flash={@flash} />
+    </div>
+    """
+  end
 
-      <.flash
-        id="client-error"
-        kind={:error}
-        title={gettext("We can't find the internet")}
-        phx-disconnected={show(".phx-client-error #client-error") |> JS.remove_attribute("hidden")}
-        phx-connected={hide("#client-error") |> JS.set_attribute({"hidden", ""})}
-        hidden
-      >
-        {gettext("Attempting to reconnect")}
-        <.icon name="hero-arrow-path" class="ml-1 size-3 motion-safe:animate-spin" />
-      </.flash>
+  attr :flash, :map, required: true
+  attr :kind, :atom, values: [:info, :error]
 
-      <.flash
-        id="server-error"
-        kind={:error}
-        title={gettext("Something went wrong!")}
-        phx-disconnected={show(".phx-server-error #server-error") |> JS.remove_attribute("hidden")}
-        phx-connected={hide("#server-error") |> JS.set_attribute({"hidden", ""})}
-        hidden
-      >
-        {gettext("Attempting to reconnect")}
-        <.icon name="hero-arrow-path" class="ml-1 size-3 motion-safe:animate-spin" />
-      </.flash>
+  defp flash(assigns) do
+    ~H"""
+    <div
+      :if={msg = Phoenix.Flash.get(@flash, @kind)}
+      id={"flash-#{@kind}"}
+      class={[
+        "min-w-[250px] max-w-sm rounded-lg px-4 py-3 shadow-lg",
+        "transform transition-all duration-300 ease-out",
+        "animate-slide-in-right",
+        @kind == :info && "bg-white border border-gray-200",
+        @kind == :error && "bg-red-50 border border-red-200"
+      ]}
+      phx-click={JS.push("lv:clear-flash", value: %{key: @kind})}
+      phx-hook="AutoDismiss"
+      data-duration="5000"
+    >
+      <div class="flex items-start">
+        <div class="flex-shrink-0">
+          <%= if @kind == :info do %>
+            <.icon name="hero-check-circle" class="w-5 h-5 text-green-500" />
+          <% else %>
+            <.icon name="hero-x-circle" class="w-5 h-5 text-red-500" />
+          <% end %>
+        </div>
+        <div class="ml-3 flex-1">
+          <p class="text-sm font-medium text-gray-900"><%= msg %></p>
+        </div>
+        <button
+          type="button"
+          class="ml-3 inline-flex text-gray-400 hover:text-gray-500"
+          aria-label="Close"
+        >
+          <.icon name="hero-x-mark" class="w-5 h-5" />
+        </button>
+      </div>
     </div>
     """
   end
@@ -122,31 +113,34 @@ defmodule OrgNotesWeb.Layouts do
   """
   def theme_toggle(assigns) do
     ~H"""
-    <div class="card relative flex flex-row items-center border-2 border-base-300 bg-base-300 rounded-full">
-      <div class="absolute w-1/3 h-full rounded-full border-1 border-base-200 bg-base-100 brightness-200 left-0 [[data-theme=light]_&]:left-1/3 [[data-theme=dark]_&]:left-2/3 transition-[left]" />
+    <div class="hidden md:flex relative items-center bg-gradient-to-r from-base-200/80 to-base-300/80 backdrop-blur-sm border border-base-content/20">
+      <div class="absolute w-[33.33%] h-full bg-gradient-to-r from-primary/20 to-primary/30 border border-primary/30 left-0 [[data-theme=light]_&]:left-[33.33%] [[data-theme=dark]_&]:left-[66.67%] transition-all duration-300 ease-out" />
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
-        phx-click={JS.dispatch("phx:set-theme")}
-        data-phx-theme="system"
+        phx-click={JS.dispatch("phx:set-theme", detail: %{theme: "system"})}
+        class="relative z-10 px-3 py-2 transition-all duration-200 hover:bg-base-content/10 group"
       >
-        <.icon name="hero-computer-desktop-micro" class="size-4 opacity-75 hover:opacity-100" />
+        <.icon name="hero-computer-desktop"
+          class="size-4 opacity-80 group-hover:opacity-100 group-hover:scale-110 transition-all duration-200"
+        />
       </button>
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
-        phx-click={JS.dispatch("phx:set-theme")}
-        data-phx-theme="light"
+        phx-click={JS.dispatch("phx:set-theme", detail: %{theme: "light"})}
+        class="relative z-10 px-3 py-2 transition-all duration-200 hover:bg-base-content/10 group"
       >
-        <.icon name="hero-sun-micro" class="size-4 opacity-75 hover:opacity-100" />
+        <.icon name="hero-sun"
+          class="size-4 opacity-80 group-hover:opacity-100 group-hover:scale-110 transition-all duration-200"
+        />
       </button>
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
-        phx-click={JS.dispatch("phx:set-theme")}
-        data-phx-theme="dark"
+        phx-click={JS.dispatch("phx:set-theme", detail: %{theme: "dark"})}
+        class="relative z-10 px-3 py-2 transition-all duration-200 hover:bg-base-content/10 group"
       >
-        <.icon name="hero-moon-micro" class="size-4 opacity-75 hover:opacity-100" />
+        <.icon name="hero-moon"
+          class="size-4 opacity-80 group-hover:opacity-100 group-hover:scale-110 transition-all duration-200"
+        />
       </button>
     </div>
     """

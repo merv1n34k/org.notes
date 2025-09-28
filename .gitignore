@@ -38,3 +38,5 @@ npm-debug.log
 .dev_postgres
 
 .env
+
+agent/

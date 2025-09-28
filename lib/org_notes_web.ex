@@ -38,11 +38,12 @@ defmodule OrgNotesWeb do
 
   def controller do
     quote do
-      use Phoenix.Controller, formats: [:html, :json]
-
-      use Gettext, backend: OrgNotesWeb.Gettext
+      use Phoenix.Controller,
+        formats: [:html, :json],
+        layouts: [html: OrgNotesWeb.Layouts]
 
       import Plug.Conn
+      import OrgNotesWeb.Gettext
 
       unquote(verified_routes())
     end
@@ -50,7 +51,8 @@ defmodule OrgNotesWeb do
 
   def live_view do
     quote do
-      use Phoenix.LiveView
+      use Phoenix.LiveView,
+        layout: {OrgNotesWeb.Layouts, :app}
 
       unquote(html_helpers())
     end
@@ -80,7 +82,7 @@ defmodule OrgNotesWeb do
   defp html_helpers do
     quote do
       # Translation
-      use Gettext, backend: OrgNotesWeb.Gettext
+      use Gettext, backend: OrgNotes.Gettext
 
       # HTML escaping functionality
       import Phoenix.HTML

@@ -15,10 +15,10 @@ defmodule OrgNotes.Accounts.User do
     field :is_active, :boolean, default: true
     field :last_login_at, :utc_datetime
 
-    has_one :preferences, OrgNotes.Accounts.UserPreference
-    has_many :tasks, OrgNotes.Tasks.Task, foreign_key: :owner_id
-    has_many :task_memberships, OrgNotes.Tasks.TaskMember
-    has_many :shared_tasks, through: [:task_memberships, :task]
+    has_many :owned_tasks, OrgNotes.Tasks.Task, foreign_key: :owner_id
+    has_many :modified_tasks, OrgNotes.Tasks.Task, foreign_key: :modified_by_id
+    has_many :created_checklist_items, OrgNotes.Tasks.ChecklistItem, foreign_key: :created_by_id
+    has_many :modified_checklist_items, OrgNotes.Tasks.ChecklistItem, foreign_key: :modified_by_id
 
     timestamps()
   end

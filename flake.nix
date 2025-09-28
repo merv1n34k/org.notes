@@ -31,6 +31,12 @@
           export PGUSER=$USER
           export LANG="en_US.UTF-8"
           export ERL_AFLAGS="-kernel shell_history enabled"
+          alias ..='cd ..'
+          alias ...='cd ../..'
+          alias ....='cd ../../..'
+          alias h='history'
+          alias c='clear'
+          alias tree='tree -C'
           alias pg_setup="\
         	  initdb -D $PGDATA &&
     		  echo \"unix_socket_directories = \

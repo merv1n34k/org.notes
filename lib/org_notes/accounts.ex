@@ -1,6 +1,10 @@
 defmodule OrgNotes.Accounts do
-  import Ecto.Query
-  alias OrgNotes.{Repo, Accounts.User, Accounts.UserPreference}
+  @moduledoc """
+  The Accounts context.
+  """
+
+  import Ecto.Query, warn: false
+  alias OrgNotes.{Repo, Accounts.User}
 
   def get_user!(id), do: Repo.get!(User, id)
 
@@ -9,9 +13,12 @@ defmodule OrgNotes.Accounts do
   end
 
   def get_or_create_user(auth) do
+    # Use email as fallback if name is not provided
+    name = auth.info.name || auth.info.nickname || auth.info.email
+
     user_params = %{
       email: auth.info.email,
-      name: auth.info.name || auth.info.nickname,
+      name: name,
       avatar_url: auth.info.image,
       provider: to_string(auth.provider),
       provider_id: to_string(auth.uid)
@@ -29,15 +36,19 @@ defmodule OrgNotes.Accounts do
 
   def create_user(attrs \\ %{}) do
     Repo.transaction(fn ->
-      user = %User{}
+      # Check if this is the first user
+      user_count = Repo.aggregate(User, :count)
+
+      # If first user, make them super admin
+      attrs = if user_count == 0 do
+        Map.put(attrs, :role, "super_admin")
+      else
+        attrs
+      end
+
+      %User{}
       |> User.changeset(attrs)
       |> Repo.insert!()
-
-      %UserPreference{}
-      |> UserPreference.changeset(%{user_id: user.id})
-      |> Repo.insert!()
-
-      user
     end)
   end
 
@@ -65,24 +76,9 @@ defmodule OrgNotes.Accounts do
   end
 
   def update_last_login(user) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
     user
-    |> User.changeset(%{last_login_at: DateTime.utc_now()})
+    |> User.changeset(%{last_login_at: now})
     |> Repo.update()
-  end
-
-  def get_user_preferences(user_id) do
-    UserPreference
-    |> Repo.get(user_id)
-    |> case do
-      nil -> %UserPreference{user_id: user_id}
-      prefs -> prefs
-    end
-  end
-
-  def update_user_preferences(user_id, attrs) do
-    user_id
-    |> get_user_preferences()
-    |> UserPreference.changeset(attrs)
-    |> Repo.insert_or_update()
   end
 end

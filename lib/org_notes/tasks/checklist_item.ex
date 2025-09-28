@@ -7,45 +7,40 @@ defmodule OrgNotes.Tasks.ChecklistItem do
 
   schema "checklist_items" do
     field :content, :string
-    field :completed, :boolean, default: false
-    field :completed_at, :utc_datetime
+    field :state, :string, default: "pending"
     field :position, :integer, default: 0
+    field :modified_at, :utc_datetime
 
     belongs_to :task, OrgNotes.Tasks.Task
-    belongs_to :referenced_task, OrgNotes.Tasks.Task
-    belongs_to :completed_by, OrgNotes.Accounts.User
+    belongs_to :created_by, OrgNotes.Accounts.User
+    belongs_to :modified_by, OrgNotes.Accounts.User
 
-    timestamps(updated_at: false)
+    timestamps()
   end
 
-  def changeset(item, attrs) do
+  def changeset(item, attrs, user_id \\ nil) do
     item
-    |> cast(attrs, [:content, :completed, :completed_at, :position, :task_id,
-                    :referenced_task_id, :completed_by_id])
+    |> cast(attrs, [:content, :state, :position, :task_id])
     |> validate_required([:content, :task_id])
     |> validate_length(:content, max: 1000)
-    |> validate_position()
-    |> maybe_set_reference_position()
-    |> foreign_key_constraint(:task_id)
-    |> foreign_key_constraint(:referenced_task_id)
-    |> foreign_key_constraint(:completed_by_id)
-  end
-
-  defp validate_position(changeset) do
-    changeset
+    |> validate_inclusion(:state, ["pending", "completed"])
     |> validate_number(:position, greater_than_or_equal_to: 0)
+    |> put_audit_fields(user_id, item)
+    |> foreign_key_constraint(:task_id)
   end
 
-  defp maybe_set_reference_position(changeset) do
-    case get_change(changeset, :referenced_task_id) do
-      nil -> changeset
-      _ ->
-        position = get_field(changeset, :position)
-        if position < 1000 do
-          put_change(changeset, :position, 1000 + position)
-        else
-          changeset
-        end
-    end
+  defp put_audit_fields(changeset, nil, _item), do: changeset
+  defp put_audit_fields(changeset, user_id, %__MODULE__{id: nil}) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    changeset
+    |> put_change(:created_by_id, user_id)
+    |> put_change(:modified_by_id, user_id)
+    |> put_change(:modified_at, now)
+  end
+  defp put_audit_fields(changeset, user_id, _item) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    changeset
+    |> put_change(:modified_by_id, user_id)
+    |> put_change(:modified_at, now)
   end
 end
