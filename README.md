@@ -4,7 +4,7 @@
 > The project is only in its early alpha state, many this does not work and you
 > could loose all your data!
 
->[!info]
+>[!important]
 > I don't have much experience in elixir and phoenix framework, so any
 > contributions (but preferably PR :P ) are welcome! Help me build the project
 > which will make task management like a breeze.
